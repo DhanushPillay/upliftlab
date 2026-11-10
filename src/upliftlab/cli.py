@@ -9,7 +9,13 @@ from pathlib import Path
 
 from upliftlab import __version__
 from upliftlab.config import AnalysisConfig, load_analysis_config
-from upliftlab.datasets import available_datasets, fetch_dataset, get_spec, load_dataset
+from upliftlab.datasets import (
+    available_datasets,
+    ensure_dataset,
+    fetch_dataset,
+    get_spec,
+    load_dataset,
+)
 from upliftlab.errors import (
     AnalysisError,
     ConfigError,
@@ -22,6 +28,7 @@ from upliftlab.experiment import analyze_experiment
 from upliftlab.report import render_readout
 from upliftlab.results import write_json, write_text
 from upliftlab.simulation import SCENARIOS, get_scenario, render_simulation, run_simulation
+from upliftlab.uplift import UpliftConfig, render_uplift, run_uplift
 
 _EXIT_CODES: dict[type[UpliftError], int] = {
     ConfigError: 2,
@@ -64,6 +71,19 @@ def build_parser() -> argparse.ArgumentParser:
     simulate.add_argument("--out", type=Path, default=None, help="write JSON here")
     simulate.add_argument("--markdown", type=Path, default=None, help="write Markdown here")
     simulate.add_argument("--force", action="store_true", help="overwrite existing outputs")
+
+    uplift = subparsers.add_parser("uplift", help="fit an uplift model and price a budget policy")
+    uplift.add_argument("dataset", choices=available_datasets())
+    uplift.add_argument("--data-dir", type=Path, default=Path("data/raw"))
+    uplift.add_argument("--outcome", default="visit")
+    uplift.add_argument("--seed", type=int, default=42)
+    uplift.add_argument("--budget", type=float, default=0.2, help="target fraction, 0 to 1")
+    uplift.add_argument("--value", type=float, default=2.0, help="value per conversion")
+    uplift.add_argument("--cost", type=float, default=0.05, help="cost per contact")
+    uplift.add_argument("--bootstrap", type=int, default=200, help="policy bootstrap draws")
+    uplift.add_argument("--out", type=Path, default=None, help="write JSON here")
+    uplift.add_argument("--markdown", type=Path, default=None, help="write Markdown here")
+    uplift.add_argument("--force", action="store_true", help="overwrite existing outputs")
 
     return parser
 
@@ -135,6 +155,37 @@ def _run_simulate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_uplift(args: argparse.Namespace) -> int:
+    out = Path(args.out) if args.out else None
+    markdown_path = Path(args.markdown) if args.markdown else None
+    if out is not None and markdown_path is not None and out.resolve() == markdown_path.resolve():
+        raise ReportError("--out and --markdown must be different paths")
+    _preflight_output(out, bool(args.force))
+    _preflight_output(markdown_path, bool(args.force))
+
+    dataset = ensure_dataset(str(args.dataset), Path(args.data_dir))
+    config = UpliftConfig(
+        outcome=str(args.outcome),
+        seed=int(args.seed),
+        budget_fraction=float(args.budget),
+        value_per_conversion=float(args.value),
+        cost_per_contact=float(args.cost),
+        policy_bootstrap=int(args.bootstrap),
+    )
+    report = run_uplift(dataset, config)
+    markdown = render_uplift(report)
+
+    if out is not None:
+        write_json(report.to_dict(), out, overwrite=bool(args.force))
+        print(f"wrote {out}")
+    if markdown_path is not None:
+        write_text(markdown, markdown_path, overwrite=bool(args.force))
+        print(f"wrote {markdown_path}")
+    if out is None and markdown_path is None:
+        print(markdown)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -145,6 +196,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_analyze(args)
         if args.command == "simulate":
             return _run_simulate(args)
+        if args.command == "uplift":
+            return _run_uplift(args)
         raise AssertionError(f"unhandled command: {args.command}")
     except UpliftError as exc:
         code = next((code for cls, code in _EXIT_CODES.items() if isinstance(exc, cls)), 1)
