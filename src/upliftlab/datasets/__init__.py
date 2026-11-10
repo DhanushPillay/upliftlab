@@ -50,10 +50,19 @@ def load_dataset(name: str, data_dir: Path = Path("data/raw")) -> Dataset:
     raise DataError(f"no loader registered for {name!r}")
 
 
+def ensure_dataset(name: str, data_dir: Path = Path("data/raw")) -> Dataset:
+    """Load a verified dataset, downloading it once when the cache is empty."""
+    spec = get_spec(name)
+    if not (data_dir / spec.filename).exists():
+        fetch_dataset(name, data_dir)
+    return load_dataset(name, data_dir)
+
+
 __all__ = [
     "Dataset",
     "DatasetSpec",
     "available_datasets",
+    "ensure_dataset",
     "fetch_dataset",
     "get_spec",
     "load_dataset",
