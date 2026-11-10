@@ -1,0 +1,20 @@
+# Benchmark assumptions. Keep this file small: it is a contract, not a dump.
+seed = 42
+split = [0.6, 0.2, 0.2]
+bootstrap = 2000
+alpha = 0.05
+simulation_replications = 5000
+simulation_replications_fast = 200
+simulation_replications_model = 1000
+
+[hillstrom]
+outcome = "visit"
+covariate = "history"
+value_per_visit = 2.0
+cost_per_email = 0.05
+
+[criteo]
+outcome = "visit"
+value_per_visit = 2.0
+cost_per_impression = 0.005
+sample_modulus = 10
