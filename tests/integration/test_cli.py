@@ -253,3 +253,42 @@ def test_simulate_rejects_same_output_paths(
     )
     assert code == 5
     assert "different paths" in capsys.readouterr().err
+
+
+def test_target_writes_ranked_csv(hillstrom_gz_path: Path, tmp_path: Path) -> None:
+    out = tmp_path / "targets.csv"
+    code = main(
+        [
+            "target",
+            "hillstrom",
+            "--data-dir",
+            str(hillstrom_gz_path.parent),
+            "--budget-dollars",
+            "6",
+            "--cost",
+            "0.05",
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 0
+    lines = out.read_text(encoding="utf-8").strip().splitlines()
+    assert lines[0] == "rank,row,predicted_uplift"
+    assert len(lines) == 121
+
+
+def test_target_rejects_two_budgets(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "target",
+                "hillstrom",
+                "--budget",
+                "0.2",
+                "--budget-dollars",
+                "6",
+                "--out",
+                str(tmp_path / "targets.csv"),
+            ]
+        )
+    assert excinfo.value.code == 2
