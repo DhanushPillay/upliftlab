@@ -122,11 +122,13 @@ class UpliftReport:
     segments: tuple[SegmentRow, ...]
     policy: PolicyResult
     baselines: tuple[PolicyResult, ...]
+    profit_curve: tuple[PolicyResult, ...]
+    budget_dollars: float | None
     caveats: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "dataset": self.dataset,
             "dataset_sha256": self.dataset_sha256,
             "outcome": self.outcome,
@@ -140,5 +142,7 @@ class UpliftReport:
             "segments": [row.to_dict() for row in self.segments],
             "policy": self.policy.to_dict(),
             "baselines": [baseline.to_dict() for baseline in self.baselines],
+            "profit_curve": [point.to_dict() for point in self.profit_curve],
+            "budget_dollars": _clean(self.budget_dollars),
             "caveats": list(self.caveats),
         }
