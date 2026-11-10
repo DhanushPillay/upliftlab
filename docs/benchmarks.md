@@ -23,10 +23,16 @@ Phase 2 claims still not measured:
 - Policy regret against a known best policy.
 - Ranking stability across seeds or bootstrap resamples.
 
-Phase 3 claims (not measured):
+Phase 3 is partially implemented and measured on Hillstrom:
 
+- A dollar budget converts to the expected number of contacts through the stated cost per contact.
+- The same holdout ranking is re-priced across a budget range, and the selected rows can be exported in rank order.
+
+Phase 3 claims still not measured:
+
+- Value/cost sensitivity, break-even value, and a risk-adjusted lower-bound policy.
 - The pipeline holds at Criteo scale.
-- A budget policy produces a useful profit estimate under a dollar budget and a sensitivity grid.
+- Policy value under IPS or DR estimation.
 
 A Qini curve alone does not prove any of these. The negative Hillstrom result stays in the report.
 
@@ -38,8 +44,8 @@ A Qini curve alone does not prove any of these. The negative Hillstrom result st
 - **Alpha:** 0.05.
 - **Hillstrom readout:** full 64,000 rows, 2,000 stratified bootstrap draws.
 - **Primary outcome:** `visit` for Hillstrom; `visit` for Criteo when that phase lands.
-- **Outputs:** `results/bench.json`, `docs/results.md`, `results/uplift.json`, and `reports/uplift.md`.
-- **Commands:** `uv run upliftlab simulate --scenario all --replications 5000 --out results/bench.json --markdown docs/results.md --force` and `uv run upliftlab uplift hillstrom --outcome visit --budget 0.2 --out results/uplift.json --markdown reports/uplift.md --force`.
+- **Outputs:** `results/bench.json`, `docs/results.md`, `results/uplift.json`, `reports/uplift.md`, and `results/targets.csv`.
+- **Commands:** `uv run upliftlab simulate --scenario all --replications 5000 --out results/bench.json --markdown docs/results.md --force`, `uv run upliftlab uplift hillstrom --outcome visit --budget-dollars 128 --cost 0.05 --out results/uplift.json --markdown reports/uplift.md --force`, and `uv run upliftlab target hillstrom --outcome visit --budget-dollars 128 --cost 0.05 --out results/targets.csv --force`.
 
 The JSON records the seed, alpha, replication count, Python and NumPy versions, platform, and creation time. Git commit, dataset checksums, and peak memory are not recorded yet; they are required before a Criteo or policy benchmark is published. A rerun with the same seed produces the same result payload; the timestamp is run metadata and is excluded from any payload hash.
 
@@ -63,6 +69,8 @@ A fixed band such as 4.5% to 5.5% is not a statistical test: at 5,000 replicatio
 | Qini / AUUC | Positive and meaningfully above random | Hillstrom holdout | **Fail on strength**: Qini 0.004, effectively random |
 | Policy value | Beat random at the same budget | Hillstrom holdout, 20% budget | Point estimate passes: $142.55 vs $80.48; no test of the difference |
 | Calibration | Observed uplift rises with predicted uplift | Hillstrom holdout quintiles | **Fail**: observed curve is non-monotone |
+| Dollar-budget mapping | $128 at $0.05 converts to 2,560 contacts | Hillstrom holdout | Pass |
+| Profit curve | 20 points spanning 5% to 100% | Hillstrom holdout | Pass: descriptive, profit non-monotone |
 | Propensity baseline | Include in the same table | Holdout | Not implemented |
 | Policy regret | Low relative to the known best policy | Heterogeneous-effect simulation | Not run: simulator lacks potential outcomes |
 | Delta-method coverage | 95% plus or minus 2 MCSE | Ratio-metric simulation | Not run: ratio metrics not implemented |
@@ -99,7 +107,7 @@ The Mens-versus-Womens contrast is **not** in the Phase 1 report. It is a planne
 The Phase 2 command is
 
 ```powershell
-uv run upliftlab uplift hillstrom --outcome visit --budget 0.2 --out results/uplift.json --markdown reports/uplift.md --force
+uv run upliftlab uplift hillstrom --outcome visit --budget-dollars 128 --cost 0.05 --out results/uplift.json --markdown reports/uplift.md --force
 ```
 
 The model is a T-learner with two `HistGradientBoostingClassifier` models. The split is 38,400 train, 12,800 validation, 12,800 holdout, stratified by treatment and outcome. The selected candidate used 15 leaves and learning rate 0.06; selection maximized validation AUUC gain. The holdout was scored once.
@@ -120,6 +128,8 @@ The model is a T-learner with two `HistGradientBoostingClassifier` models. The s
 Predicted uplift rises across the five holdout rank buckets, but observed uplift does not: Q1 0.0682, Q2 0.0706, Q3 0.0455, Q4 0.0421, Q5 0.0805. That is evidence against a strong ranking, and it is consistent with the near-zero Qini.
 
 The model policy beats random on this holdout by a point estimate, but the difference is not tested, the bootstrap excludes model-selection uncertainty, and treat-all spends five times as much. The case study in [uplift-case-study.md](uplift-case-study.md) states these limits in full.
+
+The profit curve at the same value and cost re-prices this ranking from 5% to 100%. Profit is $63.19 at 5%, $142.55 at 20%, $142.67 at 25%, $132.02 at 30%, $160.86 at 50%, and $402.39 at 100%. ROI falls from 197.5% to 62.9% as spend grows. The middle of the curve is non-monotone, which is consistent with a weak ranking plus a positive average effect. It is not evidence that 100% is the right campaign size. The `target` export for the $128 budget writes 2,560 rows with the original dataframe index, rank, and predicted uplift.
 
 ## 7. Criteo Uplift (planned)
 
@@ -165,7 +175,8 @@ The generated table lives in [results.md](results.md). It is written by the benc
 uv sync
 uv run upliftlab simulate --scenario all --replications 5000 --out results/bench.json --markdown docs/results.md --force
 uv run upliftlab analyze hillstrom --out reports/hillstrom-readout.md --json results/hillstrom-readout.json
-uv run upliftlab uplift hillstrom --outcome visit --budget 0.2 --out results/uplift.json --markdown reports/uplift.md --force
+uv run upliftlab uplift hillstrom --outcome visit --budget-dollars 128 --cost 0.05 --out results/uplift.json --markdown reports/uplift.md --force
+uv run upliftlab target hillstrom --outcome visit --budget-dollars 128 --cost 0.05 --out results/targets.csv --force
 ```
 
-Raw data and generated results are not committed. The `target` command and Criteo case study are Phase 3 work and do not exist yet.
+Raw data and generated results are not committed. The Criteo case study is Phase 4 work and does not exist yet.
