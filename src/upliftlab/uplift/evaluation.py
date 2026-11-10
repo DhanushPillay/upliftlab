@@ -320,6 +320,33 @@ def baseline_policies(
     )
 
 
+def profit_curve(
+    y: np.ndarray,
+    treatment: np.ndarray,
+    score: np.ndarray,
+    *,
+    value_per_conversion: float,
+    cost_per_contact: float,
+    n_points: int = 20,
+) -> tuple[PolicyResult, ...]:
+    """Price the model policy across the full budget range without bootstrap."""
+    if n_points < 2:
+        raise AnalysisError("profit curve needs at least two points")
+    fractions = np.linspace(1.0 / n_points, 1.0, n_points)
+    return tuple(
+        policy_value(
+            f"budget_{fraction:.2f}",
+            y,
+            treatment,
+            score,
+            budget_fraction=float(fraction),
+            value_per_conversion=value_per_conversion,
+            cost_per_contact=cost_per_contact,
+        )
+        for fraction in fractions
+    )
+
+
 def metrics_with_baselines(
     metrics: UpliftMetrics,
     baselines: Sequence[PolicyResult],
