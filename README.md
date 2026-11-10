@@ -4,13 +4,14 @@
 
 Most A/B tests stop at an average effect. Most uplift models stop at a ranking. Neither tells a growth team how many customers to treat, or what the campaign is worth.
 
-`upliftlab` is a small, CPU-only toolkit for that decision. It is implemented end to end: a randomized experiment readout with sample-ratio mismatch, covariate balance, a Welch average treatment effect, a stratified bootstrap, CUPED variance reduction, and a simulation benchmark; a T-learner uplift model with Qini/AUUC ranking; a fixed-budget targeting policy with bootstrap uncertainty; and a FastAPI + React interface that runs locally in Docker.
+`upliftlab` is a small, CPU-only toolkit for that decision. It is implemented end to end: a randomized experiment readout with sample-ratio mismatch, covariate balance, a Welch average treatment effect, a stratified bootstrap, CUPED variance reduction, and a simulation benchmark; a T-learner uplift model with Qini/AUUC ranking; a budget policy with dollar budgets, a profit-versus-budget curve, bootstrap uncertainty, and a customer-level targeting export; and a FastAPI + React interface that runs locally in Docker.
 
 ## What works now
 
 - `fetch` downloads the Hillstrom e-mail dataset, verifies its SHA-256, and caches it under `data/raw/`.
 - `analyze` checks the three-arm randomization, compares covariate balance, estimates the any-email versus no-email effect on `visit`, bootstraps the interval, and reports CUPED variance reduction using pre-period `history`.
-- `uplift` fits a T-learner, scores holdout customers by predicted uplift, reports Qini/AUUC, compares predicted and observed uplift by rank bucket, and prices a fixed-budget policy against treat-all and random targeting.
+- `uplift` fits a T-learner, scores holdout customers by predicted uplift, reports Qini/AUUC, compares predicted and observed uplift by rank bucket, and prices a policy at a fraction or dollar budget against treat-all and random targeting. It also emits a profit-versus-budget curve.
+- `target` writes the ranked holdout customers a budget would contact, with original row ids, rank, and predicted uplift.
 - A FastAPI service exposes the readout and policy; a React interface renders them with the budget controls.
 - `docker compose up --build` runs the API and built frontend as one local container.
 - Output is Markdown, canonical JSON with a schema version, and a JSON API.
@@ -22,10 +23,11 @@ Most A/B tests stop at an average effect. Most uplift models stop at a ranking. 
 uv sync
 uv run upliftlab fetch hillstrom
 uv run upliftlab analyze hillstrom --out reports/hillstrom-readout.md --json results/hillstrom-readout.json
-uv run upliftlab uplift hillstrom --budget 0.2 --out results/uplift.json --markdown reports/uplift.md
+uv run upliftlab uplift hillstrom --budget-dollars 128 --cost 0.05 --out results/uplift.json --markdown reports/uplift.md
+uv run upliftlab target hillstrom --budget-dollars 128 --cost 0.05 --out results/targets.csv
 ```
 
-The readout defaults match `configs/readout.toml`; pass `--config` only when you want a different outcome, covariate, alpha, bootstrap count, or seed. The uplift command auto-downloads the dataset when the cache is empty. Run the commands on separate lines in PowerShell. Without `--out` or `--markdown`, both commands print to stdout.
+The readout defaults match `configs/readout.toml`; pass `--config` only when you want a different outcome, covariate, alpha, bootstrap count, or seed. `--budget` and `--budget-dollars` are mutually exclusive; a dollar budget converts to contacts through `--cost`. The uplift and target commands auto-download the dataset when the cache is empty. Run the commands on separate lines in PowerShell. Without `--out` or `--markdown`, both commands print to stdout.
 
 ### Local UI
 
@@ -54,7 +56,7 @@ CUPED is computed in-sample for the readout. A targeting model must fit theta an
 
 Average lift is not a targeting rule. A campaign can lift revenue on average while most of the spend goes to customers who would have bought anyway. A response model makes this worse: it ranks sure things highest. A Qini curve ranks uplift models but does not say where to stop spending.
 
-The decision needs three things together: a trustworthy average effect, a ranking of persuadable customers, and a budget rule with uncertainty on profit. Phase 1 delivers the first and a calibration check. Phase 2 delivers the ranking and a fixed-budget policy. Phase 3 covers the Criteo scale case and release work.
+The decision needs three things together: a trustworthy average effect, a ranking of persuadable customers, and a budget rule with uncertainty on profit. Phase 1 delivers the first and a calibration check. Phase 2 delivers the ranking. Phase 3 adds dollar budgets, a profit-versus-budget curve, and a customer-level targeting export. Criteo scale and release work follow.
 
 ## Design choices
 
@@ -82,10 +84,11 @@ Phases 0, 1, and the implemented part of Phase 2 are done.
 - [x] Simulation calibration: Type I error, coverage, power, MCSE
 - [x] Markdown and JSON readout
 - [x] Phase 2: T-learner uplift model, Qini/AUUC, rank-bucket calibration, fixed-budget policy
+- [x] Phase 3: dollar budgets, profit-versus-budget curve, ranked `target` export
 - [x] FastAPI service, React interface, Docker Compose
 - [x] First green CI run on `main`
 - [ ] Phase 2 remaining: sequential and Bayesian readout, ratio metrics, MDE, guardrails, multiple testing, propensity baseline, IPS/DR, policy regret
-- [ ] Phase 3: Criteo loader and case study, full report
+- [ ] Phase 4: Criteo loader and case study, full report
 - [ ] Release workflow (PyPI publish)
 
 ## Benchmark result
@@ -105,11 +108,13 @@ The uplift command fits a T-learner on the Hillstrom data, selects a candidate o
 - Holdout ATE: +0.0610 (95% CI 0.0489 to 0.0732).
 - Qini coefficient: 0.004, or close to random ranking.
 - Top-decile uplift: 0.0722, against an overall holdout uplift near 0.061.
-- Policy at a 20% budget: 2,560 customers, 135.3 incremental visits, $142.55 profit, 95% bootstrap CI [$37.25, $238.31].
+- Policy at a $128 budget, or 2,560 contacts at $0.05 each: 135.3 incremental visits, $142.55 profit, 95% bootstrap CI [$37.25, $238.31].
 - Random targeting at the same budget: $80.48 profit.
 - Treat-all: $402.39 profit, but it spends five times as much.
+- Profit is not monotone in the curve: it rises to $142.67 at 25%, falls to $132.02 at 30%, then climbs to $402.39 at 100%. ROI is highest at the smallest budget (197.5% at 5%) and falls as spend grows.
+- `target` writes the 2,560 highest-ranked holdout customers to `results/targets.csv`.
 
-The model policy beats random on this holdout, but the ranking signal is weak: Qini is near zero and the observed uplift by predicted rank is not monotone. The bootstrap interval also conditions on the selected customers and excludes model-selection uncertainty. The honest reading is that the pipeline works and the policy comparison is positive, not that the model reliably finds persuadable customers. Full output and interpretation: [docs/uplift-case-study.md](docs/uplift-case-study.md).
+The model policy beats random on this holdout, but the ranking signal is weak: Qini is near zero and the observed uplift by predicted rank is not monotone. The bootstrap interval also conditions on the selected customers and excludes model-selection uncertainty. The profit curve is descriptive and shares the same holdout outcomes, so its points are correlated and none is a causal estimate for a future campaign. The honest reading is that the pipeline works and the policy comparison is positive, not that the model reliably finds persuadable customers. Full output and interpretation: [docs/uplift-case-study.md](docs/uplift-case-study.md).
 
 Quality gates: `pytest` with an 85% coverage floor, `ruff check`, `ruff format --check`, and `mypy --strict`.
 
@@ -121,7 +126,7 @@ src/upliftlab/
   config.py        # frozen readout config, TOML loading
   datasets/        # registry, checksum download, Hillstrom loader
   experiment/      # SRM, balance, Welch ATE, bootstrap, CUPED
-  uplift/          # T-learner, Qini/AUUC, policy value, Markdown report
+  uplift/          # T-learner, Qini/AUUC, policy value, profit curve, target rows
   simulation/      # synthetic scenarios, calibration runner, Markdown table
   api/             # FastAPI schemas, cached service, routes
   report/          # Markdown readout
