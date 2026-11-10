@@ -1,6 +1,6 @@
 # Benchmarks
 
-This document separates what Phase 1 measures from what later phases will measure. Targets are acceptance criteria, not results. Results are written to [results.md](results.md) by the benchmark command, including negative findings.
+This document separates what the current code measures from what later work will measure. Targets are acceptance criteria, not results. Results are written to [results.md](results.md) and [uplift-case-study.md](uplift-case-study.md), including negative findings.
 
 ## 1. Claims by phase
 
@@ -10,14 +10,25 @@ Phase 1 is implemented and makes three claims:
 2. Every reported estimate has an interval, and the interval label matches the configured alpha.
 3. The simulation benchmark is reproducible from a fixed seed.
 
-Phase 2 and Phase 3 make further claims that are **not measured yet**:
+Phase 2 is now partially implemented and measured on the Hillstrom holdout. The measured claims are narrow:
 
-- An uplift model beats treat-all, random, and propensity baselines on holdout.
-- Qini/AUUC ranking quality translates into policy value.
-- A budget policy produces a useful profit estimate with honest uncertainty.
-- Policy regret is low against a known best policy.
+- A T-learner can be fitted, scored, and evaluated without touching the holdout until the final report.
+- The ranking has a measured Qini and AUUC on holdout. On Hillstrom the Qini is near zero, so the claim that the model ranks persuadable customers well is **not supported**.
+- A fixed-fraction policy has a measured holdout profit and a bootstrap interval. The interval conditions on the selected customers and excludes model-selection uncertainty.
 
-A Qini curve alone does not prove any of these. They stay out of the Phase 1 results table until the code exists.
+Phase 2 claims still not measured:
+
+- A propensity baseline or a like-for-like comparison against it.
+- Policy value under IPS or DR estimation.
+- Policy regret against a known best policy.
+- Ranking stability across seeds or bootstrap resamples.
+
+Phase 3 claims (not measured):
+
+- The pipeline holds at Criteo scale.
+- A budget policy produces a useful profit estimate under a dollar budget and a sensitivity grid.
+
+A Qini curve alone does not prove any of these. The negative Hillstrom result stays in the report.
 
 ## 2. Protocol
 
@@ -27,8 +38,8 @@ A Qini curve alone does not prove any of these. They stay out of the Phase 1 res
 - **Alpha:** 0.05.
 - **Hillstrom readout:** full 64,000 rows, 2,000 stratified bootstrap draws.
 - **Primary outcome:** `visit` for Hillstrom; `visit` for Criteo when that phase lands.
-- **Outputs:** `results/bench.json` and a generated `docs/results.md`.
-- **Command:** `uv run upliftlab simulate --scenario all --replications 5000 --out results/bench.json --markdown docs/results.md --force`.
+- **Outputs:** `results/bench.json`, `docs/results.md`, `results/uplift.json`, and `reports/uplift.md`.
+- **Commands:** `uv run upliftlab simulate --scenario all --replications 5000 --out results/bench.json --markdown docs/results.md --force` and `uv run upliftlab uplift hillstrom --outcome visit --budget 0.2 --out results/uplift.json --markdown reports/uplift.md --force`.
 
 The JSON records the seed, alpha, replication count, Python and NumPy versions, platform, and creation time. Git commit, dataset checksums, and peak memory are not recorded yet; they are required before a Criteo or policy benchmark is published. A rerun with the same seed produces the same result payload; the timestamp is run metadata and is excluded from any payload hash.
 
@@ -45,17 +56,18 @@ The JSON records the seed, alpha, replication count, Python and NumPy versions, 
 
 A fixed band such as 4.5% to 5.5% is not a statistical test: at 5,000 replications its edge is only about 1.6 MCSE from 5%. The report uses the +/- 2 MCSE band and always prints the MCSE.
 
-## 4. Phase 2 and Phase 3 acceptance criteria (planned)
+## 4. Phase 2 and Phase 3 acceptance criteria
 
-| Check | Target | Measurement |
-| --- | --- | --- |
-| Qini / AUUC | Positive, bootstrap CI excludes zero | Hillstrom and Criteo holdout |
-| Policy value | Beat treat-all and propensity at some budget | Holdout profit curve |
-| Calibration | Observed uplift inside the predicted decile interval for most deciles | Holdout calibration table |
-| Policy regret | Low relative to the known best policy | Heterogeneous-effect simulation |
-| Delta-method coverage | 95% plus or minus 2 MCSE | Ratio-metric simulation |
+| Check | Target | Measurement | Status |
+| --- | --- | --- | --- |
+| Qini / AUUC | Positive and meaningfully above random | Hillstrom holdout | **Fail on strength**: Qini 0.004, effectively random |
+| Policy value | Beat random at the same budget | Hillstrom holdout, 20% budget | Point estimate passes: $142.55 vs $80.48; no test of the difference |
+| Calibration | Observed uplift rises with predicted uplift | Hillstrom holdout quintiles | **Fail**: observed curve is non-monotone |
+| Propensity baseline | Include in the same table | Holdout | Not implemented |
+| Policy regret | Low relative to the known best policy | Heterogeneous-effect simulation | Not run: simulator lacks potential outcomes |
+| Delta-method coverage | 95% plus or minus 2 MCSE | Ratio-metric simulation | Not run: ratio metrics not implemented |
 
-These rows are not run by the Phase 1 command.
+The Phase 2 rows above are the honest result, not a success story. The model pipeline runs and is evaluated correctly, but Hillstrom does not give a strong ranking signal with this T-learner.
 
 ## 5. Phase 1 simulation matrix
 
@@ -67,7 +79,7 @@ These rows are not run by the Phase 1 command.
 | Harmful | -2 percentage points | 50/50 | Sign handling and power |
 | Unbalanced | +2 percentage points | 20/80 | Precision loss under unequal allocation |
 
-The heterogeneous scenario measures the average effect only. It does not measure Qini, decile calibration, or regret; those require the Phase 2 uplift layer.
+The heterogeneous scenario measures the average effect only. The simulator does not produce potential outcomes, so it does not measure Qini, decile calibration, or regret. Phase 2 measures Qini, calibration, and policy value on the real Hillstrom holdout instead.
 
 ## 6. Hillstrom readout
 
@@ -81,6 +93,33 @@ The heterogeneous scenario measures the average effect only. It does not measure
 The 0.4% variance reduction is a real miss, not a rounding issue. With in-sample theta, variance reduction is the squared correlation; reaching 20% would require `|r| >= 0.45` between `history` and `visit`. The target was pre-specified in this document, not in an external registry, and it is not changed after seeing the result. A future Criteo or pre-period-rich dataset should carry a justified target instead.
 
 The Mens-versus-Womens contrast is **not** in the Phase 1 report. It is a planned secondary analysis, because the headline estimand is assignment to a 50/50 mixture of the two e-mails.
+
+### Uplift and policy result (Phase 2)
+
+The Phase 2 command is
+
+```powershell
+uv run upliftlab uplift hillstrom --outcome visit --budget 0.2 --out results/uplift.json --markdown reports/uplift.md --force
+```
+
+The model is a T-learner with two `HistGradientBoostingClassifier` models. The split is 38,400 train, 12,800 validation, 12,800 holdout, stratified by treatment and outcome. The selected candidate used 15 leaves and learning rate 0.06; selection maximized validation AUUC gain. The holdout was scored once.
+
+| Quantity | Value |
+| --- | ---: |
+| Holdout ATE | +0.0610 (95% CI 0.0489 to 0.0732) |
+| Qini coefficient | 0.004 |
+| AUUC | 0.0204 |
+| Top-decile uplift | 0.0722 |
+
+| Policy | Budget | Customers | Incremental visits | Value | Cost | Profit | ROI | 95% bootstrap CI |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Uplift model | 20% | 2,560 | 135.3 | $270.55 | $128.00 | $142.55 | 111.4% | [$37.25, $238.31] |
+| Treat all | 100% | 12,800 | 521.2 | $1,042.39 | $640.00 | $402.39 | 62.9% | n/a |
+| Random | 20% | 2,560 | 104.2 | $208.48 | $128.00 | $80.48 | 62.9% | n/a |
+
+Predicted uplift rises across the five holdout rank buckets, but observed uplift does not: Q1 0.0682, Q2 0.0706, Q3 0.0455, Q4 0.0421, Q5 0.0805. That is evidence against a strong ranking, and it is consistent with the near-zero Qini.
+
+The model policy beats random on this holdout by a point estimate, but the difference is not tested, the bootstrap excludes model-selection uncertainty, and treat-all spends five times as much. The case study in [uplift-case-study.md](uplift-case-study.md) states these limits in full.
 
 ## 7. Criteo Uplift (planned)
 
@@ -96,7 +135,7 @@ No Criteo result is reported yet. The profit assumptions in `configs/benchmark.t
 
 - Every estimate is reported with a confidence interval.
 - The primary metric is fixed before modeling and is not swapped after seeing results.
-- All baselines appear in the same table as the uplift model once Phase 2 exists.
+- All baselines appear in the same table as the uplift model.
 - Negative or null results stay in the report.
 - Statistical significance and practical significance are reported separately.
 - Cost and value assumptions are stated next to the profit numbers.
@@ -105,13 +144,14 @@ No Criteo result is reported yet. The profit assumptions in `configs/benchmark.t
 
 ## 9. Runtime budget
 
-These are provisional until the Phase 2/3 code exists.
+These are provisional for the stages that do not exist. The measured stages are the simulation, the readout, and the Hillstrom uplift run.
 
 | Stage | Target |
 | --- | --- |
 | Fast tests | Under 60 seconds |
 | Phase 1 simulation, 5,000 replications | Under 5 minutes |
 | Hillstrom readout | Under 2 minutes |
+| Hillstrom uplift and policy | Under 5 minutes |
 | Criteo 10% case study | Under 10 minutes |
 | Full Phase 2/3 benchmark | Under 30 minutes |
 
@@ -125,6 +165,7 @@ The generated table lives in [results.md](results.md). It is written by the benc
 uv sync
 uv run upliftlab simulate --scenario all --replications 5000 --out results/bench.json --markdown docs/results.md --force
 uv run upliftlab analyze hillstrom --out reports/hillstrom-readout.md --json results/hillstrom-readout.json
+uv run upliftlab uplift hillstrom --outcome visit --budget 0.2 --out results/uplift.json --markdown reports/uplift.md --force
 ```
 
-Raw data and generated results are not committed. The `uplift` and `target` commands are Phase 2 and Phase 3 work and do not exist yet.
+Raw data and generated results are not committed. The `target` command and Criteo case study are Phase 3 work and do not exist yet.
