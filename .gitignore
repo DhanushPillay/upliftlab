@@ -20,6 +20,11 @@ coverage.xml
 data/
 results/
 reports/
+artifacts/
+
+# Web
+web/node_modules/
+web/dist/
 
 # Environment
 .env
