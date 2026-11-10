@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this software, cite the repository and the datasets it analyses."
+title: "upliftlab"
+abstract: "A small, CPU-only toolkit for randomized experiment readout, CUPED variance reduction, and simulation calibration."
+type: software
+authors:
+  - family-names: Pillay
+    given-names: Dhanush
+license: MIT
