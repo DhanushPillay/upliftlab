@@ -19,10 +19,13 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Information Analysis",
 ]
 dependencies = [
+  "fastapi>=0.115,<1",
   "numpy>=1.26",
   "pandas>=2.2",
   "requests>=2.31",
+  "scikit-learn>=1.5,<2",
   "scipy>=1.11",
+  "uvicorn[standard]>=0.34,<1",
 ]
 
 [project.scripts]
@@ -30,6 +33,8 @@ upliftlab = "upliftlab.cli:main"
 
 [dependency-groups]
 dev = [
+  "httpx>=0.28.1",
+  "httpx2>=2.16.0",
   "hypothesis>=6.100",
   "mypy>=1.10",
   "pandas-stubs>=2.2",
