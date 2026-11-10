@@ -48,6 +48,11 @@ def _policy_row(policy: PolicyResult) -> str:
 
 def render_uplift(report: UpliftReport) -> str:
     """Render a compact report. All numbers come from the typed result."""
+    budget_label = (
+        f"${report.budget_dollars:,.0f}"
+        if report.budget_dollars is not None
+        else _percent(report.policy.budget_fraction, 0)
+    )
     lines: list[str] = [
         f"# Uplift and policy report: {report.dataset}",
         "",
@@ -67,8 +72,8 @@ def render_uplift(report: UpliftReport) -> str:
         f"- Qini coefficient: {_number(report.metrics.qini, 3)}",
         f"- AUUC: {_number(report.metrics.auuc, 4)}",
         f"- Uplift in the top decile: {_number(report.metrics.uplift_top_decile, 4)}",
-        f"- Policy profit at {_percent(report.policy.budget_fraction, 0)} budget: "
-        f"{_money(report.policy.profit)}",
+        f"- Policy budget: {budget_label}",
+        f"- Policy profit at {budget_label} budget: {_money(report.policy.profit)}",
         "",
         "## Policy value",
         "",
@@ -81,6 +86,20 @@ def render_uplift(report: UpliftReport) -> str:
         "The model policy targets the highest predicted uplift first. Treat-all and random "
         "are evaluated on the same holdout. The interval resamples outcomes within the "
         "selected customers, so it does not include model-selection uncertainty.",
+        "",
+        "## Profit versus budget",
+        "",
+        "| Budget | Customers | Incremental | Value | Cost | Profit | ROI |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        *(
+            f"| {_percent(point.budget_fraction, 0)} | {point.n_target:,} | "
+            f"{_number(point.incremental_conversions, 1)} | {_money(point.value)} | "
+            f"{_money(point.cost)} | {_money(point.profit)} | {_percent(point.roi)} |"
+            for point in report.profit_curve
+        ),
+        "",
+        "The curve re-prices the same holdout ranking at each budget. It is descriptive: "
+        "the points are correlated, and no point is a causal estimate for a future campaign.",
         "",
         "## Observed uplift by predicted rank",
         "",
