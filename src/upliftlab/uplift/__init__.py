@@ -11,6 +11,7 @@ from upliftlab.uplift.model import (
     fit_uplift,
     policy_for_budget,
     run_uplift,
+    target_rows,
 )
 from upliftlab.uplift.report import render_uplift
 from upliftlab.uplift.types import (
@@ -36,4 +37,5 @@ __all__ = [
     "render_uplift",
     "run_uplift",
     "segment_rows",
+    "target_rows",
 ]
