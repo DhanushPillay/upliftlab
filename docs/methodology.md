@@ -15,7 +15,7 @@ The project handles randomized experiments with:
 
 The main estimand is the intent-to-treat (ITT) effect. Exposure and treatment-on-the-treated effects are out of scope for the first version, because they require additional assumptions and are easy to get wrong.
 
-Implemented in Phase 1: SRM, covariate balance, Welch difference in means, stratified bootstrap, CUPED, and a calibration simulator. Implemented in Phase 2: a T-learner uplift model, Qini/AUUC, rank-bucket calibration, a fixed-budget policy with bootstrap uncertainty, and a FastAPI + React interface.
+Implemented in Phase 1: SRM, covariate balance, Welch difference in means, stratified bootstrap, CUPED, and a calibration simulator. Implemented in Phase 2: a T-learner uplift model, Qini/AUUC, rank-bucket calibration, a fixed-budget policy with bootstrap uncertainty, and a FastAPI + React interface. Implemented in Phase 3: dollar budgets, a profit-versus-budget curve, and a ranked target export.
 
 Planned: S-learner and propensity baselines, IPS/DR policy evaluation, policy regret, sequential monitoring, Bayesian readout, ratio metrics, power/MDE, guardrails, multiple-testing correction, and the Criteo scale case.
 
@@ -262,6 +262,8 @@ Value is `value_per_conversion * Delta`, cost is `k * cost_per_contact`, profit 
 
 This is a direct observed-outcome contrast, not IPS or DR. It uses the randomized holdout and is valid for the selected set, but it does not adjust for covariate imbalance inside that set. The 95% bootstrap interval resamples outcomes within arm and conditions on the selected customers. It does not include model-selection uncertainty, and it is not a confidence interval for the difference between the model and random policies.
 
+The same pricing routine is re-run across 20 budget fractions to produce the descriptive profit curve described in section 7.1.
+
 The planned IPS/DR estimators would use the known assignment probability and outcome models. The planned reliability table would report Kish effective sample size, maximum weight, interval width relative to the estimate, and weighted covariate imbalance. None of that is implemented.
 
 ### 6.4 Policy regret (planned)
@@ -274,15 +276,16 @@ $$
 
 where `pi*` is the best policy under the known potential outcomes. Regret would be reported as a distribution over replications, not a single number. The Phase 1 simulator does not produce potential outcomes for this, so no regret result exists.
 
-## 7. Budget-constrained policy (fixed fraction implemented)
+## 7. Budget-constrained policy (fraction and dollar budget implemented)
 
-The implemented rule targets a fixed fraction of the holdout, not a dollar budget. The number of targeted customers is
+Two budget inputs are accepted: a fraction `f` of the holdout via `--budget`, or a dollar budget `B` via `--budget-dollars`. They are mutually exclusive. A dollar budget converts to a contact count through the homogeneous cost per contact `c`:
 
 $$
-k = \left\lceil f \cdot n \right\rceil,
+k = \min\left(n,\ \left\lceil \frac{B}{c} \right\rceil\right),
+\qquad f_{\text{eff}} = \frac{k}{n}.
 $$
 
-where `f` is `--budget` and `n` is the holdout size. The policy ranks customers by predicted uplift and treats the top `k`, with a stable sort for ties.
+A fraction budget uses `k = ceil(f * n)`. In both cases the policy ranks customers by predicted uplift and treats the top `k`, with a stable sort for ties. Every selected set must contain both arms.
 
 Cost is homogeneous per contact, and value is homogeneous per incremental outcome unit. For the Hillstrom `visit` outcome, `--value 2.0` means $2 per incremental visit, and `--cost 0.05` means $0.05 per contact. The parameter name `value_per_conversion` is historical; it is applied to whatever outcome is configured.
 
@@ -298,9 +301,17 @@ $$
 
 ROI is `profit / cost` when cost is positive. The 95% bootstrap interval for profit resamples outcomes within arm and conditions on the selected customers.
 
-The report compares the model with random targeting at the same fraction and with treat-all at 100% of the holdout. Treat-all is a different budget, not a like-for-like competitor.
+The report compares the model with random targeting at the same effective fraction and with treat-all at 100% of the holdout. Treat-all is a different budget, not a like-for-like competitor.
 
-Not implemented: a dollar-budget input, a profit-versus-budget curve, a value/cost sensitivity grid, break-even value, a risk-adjusted lower-bound policy, a propensity baseline, and a separate `target` command. Use `uplift --budget` for the current fixed-fraction policy.
+### 7.1 Profit versus budget
+
+The profit curve re-prices the same fitted holdout ranking at 20 evenly spaced fractions from 0.05 to 1.00. It reports customers, incremental outcome, value, cost, profit, and ROI at each point. Each point uses the same direct holdout contrast as the policy, without a bootstrap interval. The points are correlated because they share customers and outcomes, and the curve is descriptive of this holdout, not a causal response surface for a future campaign. A non-monotone curve is possible and is reported as-is.
+
+### 7.2 Target export
+
+The `target` command fits the model once, selects the top `k` holdout customers under the same budget rule, and writes a CSV with `rank`, `row`, and `predicted_uplift`. `row` is the original dataframe index of the holdout row, so the export joins back to the source frame. The export contains holdout rows only; the fitted model itself is not persisted or published.
+
+Not implemented: a value/cost sensitivity grid, break-even value, a risk-adjusted lower-bound policy, a propensity baseline, IPS/DR policy evaluation, and policy regret. Those remain Phase 2/4 work.
 
 ## 8. Simulation design (implemented, Phase 1 subset)
 
@@ -351,7 +362,8 @@ The simulator does **not** produce potential outcomes for Qini, calibration, pol
 - `uv.lock` committed.
 - Benchmark outputs written to JSON and rendered into Markdown from the same payload.
 - Full calibration suite: `uv run upliftlab simulate --scenario all --replications 5000 --out results/bench.json --markdown docs/results.md --force`.
-- Uplift and policy case study: `uv run upliftlab uplift hillstrom --outcome visit --budget 0.2 --out results/uplift.json --markdown reports/uplift.md --force`.
+- Uplift and policy case study: `uv run upliftlab uplift hillstrom --outcome visit --budget-dollars 128 --cost 0.05 --out results/uplift.json --markdown reports/uplift.md --force`.
+- Target export: `uv run upliftlab target hillstrom --outcome visit --budget-dollars 128 --cost 0.05 --out results/targets.csv --force`.
 - Local API and UI: `docker compose up --build`, then `http://localhost:8000` and `GET /api/health`.
 - Fast tests run in CI without downloading data.
 
