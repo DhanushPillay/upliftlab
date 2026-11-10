@@ -2,7 +2,7 @@
 
 This document records the statistical contract for `upliftlab`. It covers the estimands, estimators, evaluation metrics, budget rule, simulation design, and assumptions. The goal is to make every number in the report traceable to a definition.
 
-Sections are labelled by phase. **Implemented** means the code exists and the Phase 1 benchmark exercises it. **Planned** means the method is specified but the code does not exist yet, so no result in [results.md](results.md) uses it.
+Sections are labelled by phase. **Implemented** means the code exists in the current tree and is exercised by tests or a real-data run. **Planned** means the method is specified but the code does not exist yet, so no result in [results.md](results.md) or [uplift-case-study.md](uplift-case-study.md) uses it.
 
 ## 1. Scope
 
@@ -15,7 +15,9 @@ The project handles randomized experiments with:
 
 The main estimand is the intent-to-treat (ITT) effect. Exposure and treatment-on-the-treated effects are out of scope for the first version, because they require additional assumptions and are easy to get wrong.
 
-Implemented in Phase 1: SRM, covariate balance, Welch difference in means, stratified bootstrap, CUPED, and a calibration simulator. Everything about uplift ranking, policy value, and budget allocation is planned for Phase 2/3.
+Implemented in Phase 1: SRM, covariate balance, Welch difference in means, stratified bootstrap, CUPED, and a calibration simulator. Implemented in Phase 2: a T-learner uplift model, Qini/AUUC, rank-bucket calibration, a fixed-budget policy with bootstrap uncertainty, and a FastAPI + React interface.
+
+Planned: S-learner and propensity baselines, IPS/DR policy evaluation, policy regret, sequential monitoring, Bayesian readout, ratio metrics, power/MDE, guardrails, multiple-testing correction, and the Criteo scale case.
 
 ## 2. Notation and estimands
 
@@ -139,11 +141,11 @@ The report would show the naive and adjusted decision boundaries, and the simula
 
 One primary metric is declared in advance. Secondary metrics would use Benjamini-Hochberg false discovery rate control. Guardrails would use Holm correction or Bonferroni. The report states which correction was applied to which family, and does not mix corrected and uncorrected p-values in the same table. Phase 1 reports a single primary outcome, so it applies no correction and says so in the caveats.
 
-## 5. Uplift modeling (planned)
+## 5. Uplift modeling (Phase 2 subset implemented)
 
-None of this section is implemented. It documents the intended Phase 2 contract so the Phase 1 benchmark is not mistaken for an uplift result.
+The implemented model is a T-learner. The S-learner, propensity baseline, and off-policy evaluation are planned and are not used in any result.
 
-### 5.1 T-learner
+### 5.1 T-learner (implemented)
 
 Fit one outcome model per arm:
 
@@ -156,9 +158,13 @@ $$
 \hat{\tau}(x) = \hat{\mu}_1(x) - \hat{\mu}_0(x).
 $$
 
-The T-learner is flexible but can be unstable when one arm is much smaller than the other. The report shows arm sizes and model diagnostics.
+The implementation uses two `HistGradientBoostingClassifier` models with `early_stopping=False` and a shared random seed. The score is the difference between the two predicted probabilities of the positive outcome. Features are the declared pre-treatment balance covariates; categorical columns are one-hot encoded with unknown categories ignored.
 
-### 5.2 S-learner
+The data is split 60% train, 20% validation, 20% holdout, stratified by treatment and outcome. Every split must contain both arms. The holdout is scored once, after model selection.
+
+The T-learner can be unstable when one arm is much smaller than the other. The report shows the split sizes, but it does not include a formal stability diagnostic.
+
+### 5.2 S-learner (planned)
 
 Fit a single model with treatment as a feature:
 
@@ -170,101 +176,95 @@ $$
 \hat{\tau}(x) = \hat{\mu}(x, 1) - \hat{\mu}(x, 0).
 $$
 
-The S-learner shares strength across arms but can shrink heterogeneous effects toward a constant. Both models are compared on the same holdout split.
+The S-learner shares strength across arms but can shrink heterogeneous effects toward a constant. It is not implemented. The planned comparison would use the same split and holdout as the T-learner.
 
-### 5.3 Baselines
+### 5.3 Baselines (implemented and planned)
 
-Every uplift model is compared with:
+The implemented policy report compares the model with:
 
-- **Random targeting:** choose the same number of units at random.
-- **Treat-all:** treat everyone.
-- **Propensity model:** estimate `P(Y=1 | X)` and rank by that score.
+- **Random targeting:** choose the same number of units at random and use the expected incremental outcome at that budget.
+- **Treat-all:** treat everyone and report full-holdout incremental profit.
 
-The propensity baseline is the important one. It represents the common but wrong practice of targeting the customers most likely to convert, which selects sure things rather than persuadables.
+The planned comparison adds a **propensity model** that estimates `P(Y=1 | X)` and ranks by that score. That baseline is the important one for showing whether uplift ranking beats response ranking, which selects sure things rather than persuadables. It is not implemented.
 
-### 5.4 Model choice (planned)
+### 5.4 Model choice (implemented)
 
-The planned implementation uses LightGBM for both learners. It handles nonlinearities and interactions on tabular data, runs on CPU, and is fast enough for a 14M-row dataset in memory. No deep learning and no distributed training. Hyperparameters are fixed in a config and tuned only on a validation split, never on the holdout.
+Two fixed candidates are compared on validation AUUC gain over the random line:
 
-### 5.5 Calibration (planned)
+| Leaves | Learning rate | L2 regularization |
+| ---: | ---: | ---: |
+| 15 | 0.06 | 1.0 |
+| 31 | 0.08 | 1.0 |
 
-Ranking and calibration are different properties. A model can produce a good Qini curve while its predicted uplift is systematically too large. The report bins the holdout by predicted uplift and compares the mean prediction with the observed difference in outcomes between treated and control within each bin. Each bin gets a confidence interval. The calibration table is a required output, not an optional diagnostic.
+Both use `max_iter=200` and `min_samples_leaf=40`. The best candidate is refit on train plus validation, then scored on holdout. The holdout is never used to choose the model or its hyperparameters.
 
-## 6. Evaluation (planned)
+The implementation uses scikit-learn's histogram gradient boosting, not LightGBM. No deep learning and no distributed training. The candidate grid is small and fixed; there is no broad hyperparameter search.
 
-Phase 1 reports a single ATE and its interval. The ranking metrics below are specified for Phase 2 and are not computed by any current command.
+### 5.5 Calibration (implemented as rank buckets)
 
-### 6.1 Qini curve
+Ranking and calibration are different properties. A model can produce a good Qini curve while its predicted uplift is systematically wrong.
+
+The implementation sorts the holdout by predicted uplift into five equal-count rank buckets. For each bucket it reports:
+
+- the number of customers and treated share,
+- the mean predicted uplift,
+- the observed difference in outcomes between treated and control, with a 95% Welch interval.
+
+Q1 is the lowest predicted uplift and Q5 is the highest. These are rank buckets, not causal strata and not deciles. The current Hillstrom result is non-monotone, which is evidence that the model does not separate persuadable customers well on that holdout.
+
+## 6. Evaluation (holdout subset implemented)
+
+Phase 1 reports a single ATE and its interval. Phase 2 adds Qini, AUUC, rank-bucket calibration, and a fixed-budget policy value. IPS/DR policy evaluation, reliability diagnostics, and policy regret are planned.
+
+### 6.1 Qini curve (implemented)
 
 Sort observations by predicted uplift in descending order. For the top `k` observations, let:
 
 - `n_t(k)` and `n_c(k)` be the number of treated and control units,
 - `y_t(k)` and `y_c(k)` be the cumulative number of positive outcomes.
 
-The Qini curve is
+The cumulative incremental outcome is
 
 $$
 Q(k) = y_t(k) - y_c(k) \cdot \frac{n_t(k)}{n_c(k)}.
 $$
 
-The Qini coefficient is the area between `Q(k)` and the diagonal from `(0, 0)` to `(N, Q(N))`, divided by the area between the reference Qini curve and that diagonal. The reference curve is built by ranking on the observed individual treatment effect proxy `y_i T_i - y_i (1 - T_i)`, following the reference implementation in scikit-uplift. It is a reference, not a true upper bound: it is computed from the same noisy holdout labels, so a normalized Qini can exceed 1. The report labels it as a reference, clips only the plotted curve for display, and always shows the raw Qini/AUUC with a bootstrap band and Qini at fixed fractions such as 10% and 20%.
+The plotted model curve is `Q(k) / n`, so the vertical axis is incremental outcomes per customer. The random line is the straight line from `(0, 0)` to the overall incremental rate `Q(n) / n`.
 
-The implementation will be validated against hand-computed examples and the scikit-uplift reference on the same inputs. Small differences in normalization are documented rather than hidden.
-
-### 6.2 Uplift curve and AUUC
-
-The uplift curve uses
+The Qini coefficient is the relative area gain over that random line:
 
 $$
-U(k) = \left(\frac{y_t(k)}{n_t(k)} - \frac{y_c(k)}{n_c(k)}\right) \cdot k.
+\text{Qini} = \frac{\text{AUUC} - \text{random AUUC}}{\text{random AUUC}}.
 $$
 
-The normalized area under the uplift curve (AUUC) is computed against the perfect uplift curve in the same way as the Qini coefficient. Qini and AUUC answer related but not identical questions, so both are reported.
+A value of 0 is random ranking, 1 captures the whole incremental outcome at the top, and negative means worse than random. The implementation reports the raw coefficient and does not divide by a scikit-uplift reference curve. It also does not yet attach a bootstrap band. The actual Hillstrom value is 0.004, which is close to random.
 
-### 6.3 Policy value
+### 6.2 Uplift curve and AUUC (implemented)
 
-For a deterministic policy `pi`, the inverse propensity score (IPS) estimate on a randomized holdout is
-
-$$
-\hat{V}_{\text{IPS}}(\pi) = \frac{1}{n}\sum_i
-\left[
-\frac{T_i Y_i \pi(X_i)}{e}
-+
-\frac{(1-T_i) Y_i (1-\pi(X_i))}{1-e}
-\right],
-$$
-
-where `e` is the known assignment probability.
-
-The doubly robust (DR) estimate uses outcome models `mu_0` and `mu_1`:
+The implementation integrates the model curve over the customer fractions with the trapezoid rule:
 
 $$
-\hat{V}_{\text{DR}}(\pi) = \frac{1}{n}\sum_i
-\left[
-\hat{\mu}_0(X_i) + \pi(X_i)(\hat{\mu}_1(X_i) - \hat{\mu}_0(X_i))
-+
-\frac{T_i (Y_i - \hat{\mu}_1(X_i)) \pi(X_i)}{e}
-+
-\frac{(1-T_i)(Y_i - \hat{\mu}_0(X_i))(1-\pi(X_i))}{1-e}
-\right].
+\text{AUUC} = \int_0^1 \frac{Q(k)}{n} \, d\left(\frac{k}{n}\right).
 $$
 
-Policy value is evaluated on the holdout only. The model that produced the scores never sees the holdout outcomes. Confidence intervals come from a stratified bootstrap.
+The random AUUC is the area under the straight random line, `0.5 * Q(n) / n`. Qini is derived from the two areas. The report shows both AUUC and Qini because they answer related but not identical questions.
 
-For binary randomized treatment, the weights are bounded by `1 / min(e, 1-e)`, so clipping is unnecessary and only adds bias. Clipping is reserved for stochastic policies or estimated propensities; when used, the report shows the clip fraction and a bias sensitivity check.
+### 6.3 Policy value (implemented, direct holdout contrast)
 
-The estimate is published only if its diagnostics pass. Otherwise the report prints "estimate unreliable" and does not present three significant digits.
+For a fixed budget fraction, the policy selects the top `k = ceil(fraction * n)` holdout customers by predicted uplift. The incremental outcome on that selected set is
 
-| Diagnostic | Warn | Fail |
-| --- | --- | --- |
-| Kish effective sample size, per arm | below 10% of `n` | below 100 |
-| Maximum weight | above 10 | above 20 |
-| CI half-width relative to the estimate | above 0.25 | above 0.5 |
-| Weighted covariate imbalance | any abs(SMD) above 0.1 | any abs(SMD) above 0.2 |
+$$
+\hat{\Delta} = \sum_{i \in S, T_i=1} Y_i
+- \sum_{i \in S, T_i=0} Y_i \cdot \frac{n_{t,S}}{n_{c,S}}.
+$$
 
-The report emits `reliability: ok | warn | fail` with the reasons, plus the weight histogram, the maximum weight, the ESS, and treatment rate by propensity decile. Random and treat-all baselines always appear in the same table. A failed reliability check is a result, not something to hide.
+Value is `value_per_conversion * Delta`, cost is `k * cost_per_contact`, profit is value minus cost, and ROI is profit divided by cost when cost is positive. Every selected set must contain both arms.
 
-### 6.4 Policy regret
+This is a direct observed-outcome contrast, not IPS or DR. It uses the randomized holdout and is valid for the selected set, but it does not adjust for covariate imbalance inside that set. The 95% bootstrap interval resamples outcomes within arm and conditions on the selected customers. It does not include model-selection uncertainty, and it is not a confidence interval for the difference between the model and random policies.
+
+The planned IPS/DR estimators would use the known assignment probability and outcome models. The planned reliability table would report Kish effective sample size, maximum weight, interval width relative to the estimate, and weighted covariate imbalance. None of that is implemented.
+
+### 6.4 Policy regret (planned)
 
 In simulation, the true policy value is known. Regret is
 
@@ -272,47 +272,35 @@ $$
 \text{regret} = V(\pi^*) - V(\hat{\pi}),
 $$
 
-where `pi*` is the best policy under the known potential outcomes. Regret is reported as a distribution over replications, not a single number.
+where `pi*` is the best policy under the known potential outcomes. Regret would be reported as a distribution over replications, not a single number. The Phase 1 simulator does not produce potential outcomes for this, so no regret result exists.
 
-## 7. Budget-constrained policy (planned)
+## 7. Budget-constrained policy (fixed fraction implemented)
 
-The planned rule assumes a homogeneous cost `c` per treated unit and a fixed budget `B`. The number of units that can be treated is
-
-$$
-k = \left\lfloor \frac{B}{c} \right\rfloor.
-$$
-
-The policy ranks units by predicted uplift and treats the top `k`. Ties are broken by a fixed, documented rule.
-
-The incremental conversions relative to no campaign are
+The implemented rule targets a fixed fraction of the holdout, not a dollar budget. The number of targeted customers is
 
 $$
-\Delta = V(\pi) - V(0),
+k = \left\lceil f \cdot n \right\rceil,
 $$
 
-where `V(0)` is the expected outcome when nobody is treated. Incremental revenue is `value * Delta`, campaign cost is `c * k`, and incremental profit is
+where `f` is `--budget` and `n` is the holdout size. The policy ranks customers by predicted uplift and treats the top `k`, with a stable sort for ties.
+
+Cost is homogeneous per contact, and value is homogeneous per incremental outcome unit. For the Hillstrom `visit` outcome, `--value 2.0` means $2 per incremental visit, and `--cost 0.05` means $0.05 per contact. The parameter name `value_per_conversion` is historical; it is applied to whatever outcome is configured.
+
+The incremental outcome, value, cost, and profit are
 
 $$
-\text{profit} = \text{value} \cdot \Delta - c \cdot k.
+\Delta = \sum_{i \in S, T_i=1} Y_i - \sum_{i \in S, T_i=0} Y_i \cdot \frac{n_{t,S}}{n_{c,S}},
 $$
 
-The incremental return on ad spend is
-
 $$
-\text{iROAS} = \frac{\text{value} \cdot \Delta}{c \cdot k}.
+\text{value} = v \cdot \Delta, \qquad \text{cost} = c \cdot k, \qquad \text{profit} = \text{value} - \text{cost}.
 $$
 
-The cost per incremental conversion is `c * k / Delta`. All four quantities get bootstrap intervals.
+ROI is `profit / cost` when cost is positive. The 95% bootstrap interval for profit resamples outcomes within arm and conditions on the selected customers.
 
-The report includes:
+The report compares the model with random targeting at the same fraction and with treat-all at 100% of the holdout. Treat-all is a different budget, not a like-for-like competitor.
 
-- the profit-versus-budget curve,
-- the same curve for treat-all, random, and propensity targeting,
-- a sensitivity grid over `value` and `c`,
-- the break-even value per conversion,
-- a risk-adjusted variant that maximizes the lower confidence bound of profit rather than the point estimate.
-
-The risk-adjusted variant is a decision aid, not a claim that the lower bound is the true profit. No `target` command exists yet.
+Not implemented: a dollar-budget input, a profit-versus-budget curve, a value/cost sensitivity grid, break-even value, a risk-adjusted lower-bound policy, a propensity baseline, and a separate `target` command. Use `uplift --budget` for the current fixed-fraction policy.
 
 ## 8. Simulation design (implemented, Phase 1 subset)
 
@@ -340,7 +328,7 @@ The five scenarios that exist are:
 
 Each replication runs the same Welch estimator used on real data, at n = 10,000 and seed 42. The headline run uses 5,000 replications per scenario and records the mean estimate, bias, empirical standard error, mean estimated standard error, interval coverage, rejection rate, and the Monte Carlo standard error of both rates. Scenarios are seeded as `seed + index`, so adding a scenario does not change the earlier ones.
 
-The simulator does **not** produce potential outcomes for Qini, calibration, policy value, or regret. Those require the Phase 2 uplift layer and are not measured.
+The simulator does **not** produce potential outcomes for Qini, calibration, policy value, or regret. Phase 2 evaluates those on real holdout labels from Hillstrom instead; the simulator still does not support them.
 
 ## 9. Assumptions and limitations
 
@@ -350,11 +338,11 @@ The simulator does **not** produce potential outcomes for Qini, calibration, pol
 - **Positivity:** both arms have nonzero probability for the covariate values in the analysis.
 - **ITT, not exposure:** Criteo's `exposure` column is post-treatment. The main analysis uses `treatment`. Conditioning on exposure would break randomization.
 - **CUPED:** requires a pre-treatment covariate and a roughly linear relationship. The report checks the correlation and the empirical variance reduction.
-- **Uplift identification (planned):** CATE estimates would rely on randomization plus the observed covariates. They are not a substitute for a new experiment when the population or campaign changes.
-- **Costs and values (planned):** the budget model uses assumed costs and values. The sensitivity analysis would be part of the result, not an appendix.
+- **Uplift identification (implemented with caveats):** CATE estimates rely on randomization plus the observed covariates. They are not a substitute for a new experiment when the population or campaign changes.
+- **Costs and values (implemented with caveats):** the policy uses assumed costs and values supplied on the command line. No sensitivity grid or break-even analysis is included, so a profit number is conditional on those assumptions.
 - **Criteo features:** the 12 anonymized features `f0` through `f11` carry no claimed business meaning.
 - **Hillstrom arms:** the primary contrast is any e-mail versus no e-mail. The Mens versus Womens contrast is secondary and not in the Phase 1 report.
-- **No new causal method:** the contribution is the end-to-end decision pipeline, the calibration checks, and the simulation evidence. The Phase 1 code uses standard estimators; the benchmark is what makes the claims checkable.
+- **No new causal method:** the contribution is the end-to-end decision pipeline, the calibration checks, and the simulation evidence. The Phase 1 and Phase 2 code use standard estimators; the benchmark and holdout evaluation are what make the claims checkable.
 
 ## 10. Reproducibility
 
@@ -363,6 +351,8 @@ The simulator does **not** produce potential outcomes for Qini, calibration, pol
 - `uv.lock` committed.
 - Benchmark outputs written to JSON and rendered into Markdown from the same payload.
 - Full calibration suite: `uv run upliftlab simulate --scenario all --replications 5000 --out results/bench.json --markdown docs/results.md --force`.
+- Uplift and policy case study: `uv run upliftlab uplift hillstrom --outcome visit --budget 0.2 --out results/uplift.json --markdown reports/uplift.md --force`.
+- Local API and UI: `docker compose up --build`, then `http://localhost:8000` and `GET /api/health`.
 - Fast tests run in CI without downloading data.
 
 ## References
