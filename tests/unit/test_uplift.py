@@ -15,8 +15,9 @@ from upliftlab.uplift import (
     policy_for_budget,
     qini_metrics,
     render_uplift,
+    target_rows,
 )
-from upliftlab.uplift.evaluation import policy_value
+from upliftlab.uplift.evaluation import policy_value, profit_curve
 
 
 def test_qini_rewards_a_real_ranking_signal() -> None:
@@ -116,3 +117,68 @@ def test_policy_for_budget_reprices_without_refitting(fitted) -> None:  # type: 
     assert policy.budget_fraction == pytest.approx(0.1)
     assert policy.n_target == 240
     assert len(baselines) == 2
+
+
+def test_dollar_budget_resolves_to_the_cost_based_count(fitted) -> None:  # type: ignore[no-untyped-def]
+    model, config = fitted
+    dollar_config = UpliftConfig(
+        outcome=config.outcome,
+        seed=config.seed,
+        budget_dollars=6.0,
+        value_per_conversion=config.value_per_conversion,
+        cost_per_contact=0.05,
+        policy_bootstrap=0,
+    )
+
+    report = build_report(model, dollar_config)
+
+    assert report.policy.n_target == 120
+    assert report.budget_dollars == pytest.approx(6.0)
+    assert report.policy.budget_fraction == pytest.approx(0.05)
+    assert len(report.profit_curve) == 20
+    assert report.profit_curve[-1].budget_fraction == pytest.approx(1.0)
+
+
+def test_report_serializes_the_profit_curve_and_dollar_budget(fitted) -> None:  # type: ignore[no-untyped-def]
+    model, config = fitted
+    dollar_config = UpliftConfig(
+        outcome=config.outcome,
+        seed=config.seed,
+        budget_dollars=6.0,
+        cost_per_contact=0.05,
+        policy_bootstrap=0,
+    )
+
+    payload = build_report(model, dollar_config).to_dict()
+
+    assert payload["budget_dollars"] == pytest.approx(6.0)
+    assert len(payload["profit_curve"]) == 20  # type: ignore[arg-type]
+    assert payload["profit_curve"][0]["budget_fraction"] == pytest.approx(0.05)  # type: ignore[index]
+    assert payload["schema_version"] == 3
+
+
+def test_profit_curve_covers_the_budget_range() -> None:
+    n = 200
+    order = np.arange(n)
+    y = ((order % 3) == 0).astype(float)
+    treatment = (order % 2).astype(np.int8)
+    score = np.arange(n, dtype=float)
+
+    curve = profit_curve(y, treatment, score, value_per_conversion=10.0, cost_per_contact=1.0)
+
+    assert len(curve) == 20
+    assert curve[0].budget_fraction == pytest.approx(0.05)
+    assert curve[-1].budget_fraction == pytest.approx(1.0)
+    assert curve[-1].n_target == y.size
+
+
+def test_target_rows_are_ranked_and_use_original_indices(fitted) -> None:  # type: ignore[no-untyped-def]
+    model, config = fitted
+    rows = target_rows(model, config)
+
+    assert len(rows) == model.split["holdout"] * 0.2
+    assert [row["rank"] for row in rows] == list(range(1, len(rows) + 1))
+    scores = [float(row["predicted_uplift"]) for row in rows]
+    assert scores == sorted(scores, reverse=True)
+    holdout_rows = {int(value) for value in model.holdout_index}
+    assert all(int(row["row"]) in holdout_rows for row in rows)
