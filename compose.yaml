@@ -1,0 +1,28 @@
+services:
+  upliftlab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      UPLIFTLAB_DATA_DIR: /app/data/raw
+      UPLIFTLAB_STATIC_DIR: /app/static
+    volumes:
+      - upliftlab-data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  upliftlab-data:
