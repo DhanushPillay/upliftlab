@@ -109,6 +109,8 @@ export interface UpliftReport {
   segments: SegmentRow[];
   policy: PolicyResult;
   baselines: PolicyResult[];
+  profit_curve: PolicyResult[];
+  budget_dollars: number | null;
   caveats: string[];
 }
 
@@ -126,7 +128,8 @@ export interface OverviewRequest {
   seed: number;
   alpha: number;
   bootstrap: number;
-  budget_fraction: number;
+  budget_fraction?: number;
+  budget_dollars?: number;
   value_per_conversion: number;
   cost_per_contact: number;
   policy_bootstrap: number;
