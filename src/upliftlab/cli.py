@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -28,7 +30,7 @@ from upliftlab.experiment import analyze_experiment
 from upliftlab.report import render_readout
 from upliftlab.results import write_json, write_text
 from upliftlab.simulation import SCENARIOS, get_scenario, render_simulation, run_simulation
-from upliftlab.uplift import UpliftConfig, render_uplift, run_uplift
+from upliftlab.uplift import UpliftConfig, fit_uplift, render_uplift, run_uplift, target_rows
 
 _EXIT_CODES: dict[type[UpliftError], int] = {
     ConfigError: 2,
@@ -77,13 +79,34 @@ def build_parser() -> argparse.ArgumentParser:
     uplift.add_argument("--data-dir", type=Path, default=Path("data/raw"))
     uplift.add_argument("--outcome", default="visit")
     uplift.add_argument("--seed", type=int, default=42)
-    uplift.add_argument("--budget", type=float, default=0.2, help="target fraction, 0 to 1")
+    uplift_budget = uplift.add_mutually_exclusive_group()
+    uplift_budget.add_argument("--budget", type=float, default=None, help="target fraction, 0 to 1")
+    uplift_budget.add_argument(
+        "--budget-dollars", type=float, default=None, help="campaign budget in dollars"
+    )
     uplift.add_argument("--value", type=float, default=2.0, help="value per conversion")
     uplift.add_argument("--cost", type=float, default=0.05, help="cost per contact")
     uplift.add_argument("--bootstrap", type=int, default=200, help="policy bootstrap draws")
     uplift.add_argument("--out", type=Path, default=None, help="write JSON here")
     uplift.add_argument("--markdown", type=Path, default=None, help="write Markdown here")
     uplift.add_argument("--force", action="store_true", help="overwrite existing outputs")
+
+    target = subparsers.add_parser(
+        "target", help="write the holdout customers a budget would target"
+    )
+    target.add_argument("dataset", choices=available_datasets())
+    target.add_argument("--data-dir", type=Path, default=Path("data/raw"))
+    target.add_argument("--outcome", default="visit")
+    target.add_argument("--seed", type=int, default=42)
+    target_budget = target.add_mutually_exclusive_group()
+    target_budget.add_argument("--budget", type=float, default=None, help="target fraction, 0 to 1")
+    target_budget.add_argument(
+        "--budget-dollars", type=float, default=None, help="campaign budget in dollars"
+    )
+    target.add_argument("--value", type=float, default=2.0)
+    target.add_argument("--cost", type=float, default=0.05)
+    target.add_argument("--out", type=Path, required=True, help="write the target CSV here")
+    target.add_argument("--force", action="store_true", help="overwrite an existing CSV")
 
     return parser
 
@@ -167,7 +190,8 @@ def _run_uplift(args: argparse.Namespace) -> int:
     config = UpliftConfig(
         outcome=str(args.outcome),
         seed=int(args.seed),
-        budget_fraction=float(args.budget),
+        budget_fraction=0.2 if args.budget is None else float(args.budget),
+        budget_dollars=args.budget_dollars,
         value_per_conversion=float(args.value),
         cost_per_contact=float(args.cost),
         policy_bootstrap=int(args.bootstrap),
@@ -186,6 +210,33 @@ def _run_uplift(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_target(args: argparse.Namespace) -> int:
+    out = Path(args.out)
+    _preflight_output(out, bool(args.force))
+
+    dataset = ensure_dataset(str(args.dataset), Path(args.data_dir))
+    config = UpliftConfig(
+        outcome=str(args.outcome),
+        seed=int(args.seed),
+        budget_fraction=0.2 if args.budget is None else float(args.budget),
+        budget_dollars=args.budget_dollars,
+        value_per_conversion=float(args.value),
+        cost_per_contact=float(args.cost),
+    )
+    fitted = fit_uplift(dataset, config)
+    rows = target_rows(fitted, config)
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=["rank", "row", "predicted_uplift"], lineterminator="\n"
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+    write_text(buffer.getvalue(), out, overwrite=bool(args.force))
+    print(f"wrote {out} ({len(rows)} rows)")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -198,6 +249,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_simulate(args)
         if args.command == "uplift":
             return _run_uplift(args)
+        if args.command == "target":
+            return _run_target(args)
         raise AssertionError(f"unhandled command: {args.command}")
     except UpliftError as exc:
         code = next((code for cls, code in _EXIT_CODES.items() if isinstance(exc, cls)), 1)
