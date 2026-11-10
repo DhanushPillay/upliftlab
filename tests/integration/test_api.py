@@ -115,3 +115,11 @@ def test_overview_rejects_bad_budget(client: TestClient) -> None:
         json={"budget_fraction": 0.0},
     )
     assert response.status_code == 422
+
+
+def test_policy_rejects_two_budget_inputs(client: TestClient) -> None:
+    response = client.post(
+        "/api/policy",
+        json={"budget_fraction": 0.2, "budget_dollars": 6.0},
+    )
+    assert response.status_code == 422
