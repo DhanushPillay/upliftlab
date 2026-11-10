@@ -10,6 +10,7 @@ from typing import Any
 from upliftlab.config import AnalysisConfig
 from upliftlab.datasets import ensure_dataset
 from upliftlab.datasets.base import Dataset
+from upliftlab.errors import AnalysisError
 from upliftlab.experiment import analyze_experiment
 from upliftlab.uplift.model import (
     FittedUplift,
@@ -42,6 +43,7 @@ def overview(
     alpha: float,
     bootstrap: int,
     budget_fraction: float,
+    budget_dollars: float | None = None,
     value_per_conversion: float,
     cost_per_contact: float,
     policy_bootstrap: int,
@@ -63,6 +65,7 @@ def overview(
         outcome=outcome,
         seed=seed,
         budget_fraction=budget_fraction,
+        budget_dollars=budget_dollars,
         value_per_conversion=value_per_conversion,
         cost_per_contact=cost_per_contact,
         policy_bootstrap=policy_bootstrap,
@@ -83,6 +86,7 @@ def policy(
     outcome: str,
     seed: int,
     budget_fraction: float,
+    budget_dollars: float | None = None,
     value_per_conversion: float,
     cost_per_contact: float,
     policy_bootstrap: int,
@@ -92,11 +96,18 @@ def policy(
         outcome=outcome,
         seed=seed,
         budget_fraction=budget_fraction,
+        budget_dollars=budget_dollars,
         value_per_conversion=value_per_conversion,
         cost_per_contact=cost_per_contact,
         policy_bootstrap=policy_bootstrap,
     )
-    chosen, baselines = policy_for_budget(fitted, config, budget_fraction)
+    effective_fraction = budget_fraction
+    if budget_dollars is not None:
+        if cost_per_contact <= 0:
+            raise AnalysisError("cost_per_contact must be positive with budget_dollars")
+        n = fitted.holdout_y.size
+        effective_fraction = min(1.0, budget_dollars / (cost_per_contact * n))
+    chosen, baselines = policy_for_budget(fitted, config, effective_fraction)
     return {
         "policy": chosen.to_dict(),
         "baselines": [baseline.to_dict() for baseline in baselines],
