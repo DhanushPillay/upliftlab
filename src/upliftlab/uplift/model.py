@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +19,7 @@ from upliftlab.experiment.estimators import difference_in_means
 from upliftlab.uplift.evaluation import (
     baseline_policies,
     policy_value,
+    profit_curve,
     qini_metrics,
     segment_rows,
 )
@@ -53,6 +55,7 @@ class UpliftConfig:
     max_iter: int = 200
     min_samples_leaf: int = 40
     budget_fraction: float = 0.2
+    budget_dollars: float | None = None
     value_per_conversion: float = 2.0
     cost_per_contact: float = 0.05
     policy_bootstrap: int = 200
@@ -74,6 +77,11 @@ class UpliftConfig:
             raise ConfigError("min_samples_leaf must be positive")
         if not 0.0 < self.budget_fraction <= 1.0:
             raise ConfigError("budget_fraction must be in (0, 1]")
+        if self.budget_dollars is not None:
+            if not math.isfinite(self.budget_dollars) or self.budget_dollars <= 0.0:
+                raise ConfigError("budget_dollars must be finite and positive")
+            if self.cost_per_contact <= 0.0:
+                raise ConfigError("budget_dollars requires a positive cost_per_contact")
         if self.value_per_conversion < 0.0:
             raise ConfigError("value_per_conversion must be non-negative")
         if self.cost_per_contact < 0.0:
@@ -97,6 +105,7 @@ class FittedUplift:
     holdout_y: np.ndarray
     holdout_treatment: np.ndarray
     holdout_score: np.ndarray
+    holdout_index: np.ndarray
 
 
 def _validate_frame(dataset: Dataset, config: UpliftConfig) -> tuple[np.ndarray, np.ndarray]:
@@ -288,19 +297,29 @@ def fit_uplift(dataset: Dataset, config: UpliftConfig | None = None) -> FittedUp
         holdout_y=y[holdout_idx],
         holdout_treatment=treatment[holdout_idx],
         holdout_score=score,
+        holdout_index=holdout_idx,
     )
+
+
+def _budget_fraction(config: UpliftConfig, n: int) -> float:
+    if config.budget_dollars is None:
+        return config.budget_fraction
+    if config.cost_per_contact <= 0.0:
+        raise ConfigError("cost_per_contact must be positive when budget_dollars is set")
+    return min(1.0, config.budget_dollars / (config.cost_per_contact * n))
 
 
 def build_report(fitted: FittedUplift, config: UpliftConfig | None = None) -> UpliftReport:
     """Attach a budget policy and baselines to a fitted holdout evaluation."""
     config = config or UpliftConfig()
     holdout_ate = difference_in_means(fitted.holdout_y, fitted.holdout_treatment)
+    fraction = _budget_fraction(config, fitted.holdout_y.size)
     policy = policy_value(
         "uplift model",
         fitted.holdout_y,
         fitted.holdout_treatment,
         fitted.holdout_score,
-        budget_fraction=config.budget_fraction,
+        budget_fraction=fraction,
         value_per_conversion=config.value_per_conversion,
         cost_per_contact=config.cost_per_contact,
         n_bootstrap=config.policy_bootstrap,
@@ -309,7 +328,14 @@ def build_report(fitted: FittedUplift, config: UpliftConfig | None = None) -> Up
     baselines = baseline_policies(
         fitted.holdout_y,
         fitted.holdout_treatment,
-        budget_fraction=config.budget_fraction,
+        budget_fraction=fraction,
+        value_per_conversion=config.value_per_conversion,
+        cost_per_contact=config.cost_per_contact,
+    )
+    curve = profit_curve(
+        fitted.holdout_y,
+        fitted.holdout_treatment,
+        fitted.holdout_score,
         value_per_conversion=config.value_per_conversion,
         cost_per_contact=config.cost_per_contact,
     )
@@ -327,6 +353,8 @@ def build_report(fitted: FittedUplift, config: UpliftConfig | None = None) -> Up
         segments=fitted.segments,
         policy=policy,
         baselines=baselines,
+        profit_curve=curve,
+        budget_dollars=config.budget_dollars,
         caveats=(
             "Scores are differences between two outcome models, not guaranteed individual effects.",
             "Candidate selection used validation AUUC; the holdout was not used to "
@@ -334,8 +362,9 @@ def build_report(fitted: FittedUplift, config: UpliftConfig | None = None) -> Up
             "Policy value uses observed holdout outcomes for the selected customers.",
             "Bootstrap intervals resample outcomes within arm and condition on the "
             "selected customers.",
+            "The profit curve is descriptive and shares the same holdout outcomes.",
             "Hillstrom treatment is assignment to any e-mail; effects are intention-to-treat.",
-            "Criteo and multi-budget optimization are not included in this Phase 2 slice.",
+            "Criteo is not included in this Phase 3 slice.",
         ),
     )
 
@@ -371,3 +400,19 @@ def policy_for_budget(
         cost_per_contact=config.cost_per_contact,
     )
     return policy, baselines
+
+
+def target_rows(fitted: FittedUplift, config: UpliftConfig) -> list[dict[str, object]]:
+    """Return the holdout rows the policy would target, in rank order."""
+    fraction = _budget_fraction(config, fitted.holdout_y.size)
+    n = fitted.holdout_y.size
+    k = max(1, min(n, math.ceil(fraction * n)))
+    order = np.argsort(-fitted.holdout_score, kind="stable")[:k]
+    return [
+        {
+            "rank": rank + 1,
+            "row": int(fitted.holdout_index[index]),
+            "predicted_uplift": float(fitted.holdout_score[index]),
+        }
+        for rank, index in enumerate(order)
+    ]
